@@ -184,22 +184,10 @@
       const insideIframe = window.self !== window.top;
 
       if (insideIframe) {
-        micButton.title = "Click to open voice input";
-        langArButton.addEventListener("click", () => setRecognitionLang("ar-EG", null));
-        langEnButton.addEventListener("click", () => setRecognitionLang("en-US", null));
+        micButton.icon = "launch";
+        micButton.title = "Voice input is not available in embedded mode — click to open the full app in a new tab";
         micButton.addEventListener("click", () => {
-          const popupUrl = new URL("popup.html", window.location.href).href + "?lang=" + recognitionLang;
-          const left = Math.round((screen.width - 320) / 2);
-          const top  = Math.round((screen.height - 280) / 2);
-          window.open(popupUrl, "voice-input", `width=320,height=280,left=${left},top=${top},resizable=no`);
-        });
-        window.addEventListener("message", (event) => {
-          if (event.data?.type === "voice-result" && event.data.text) {
-            if (!fillAssistantPrompt(event.data.text)) {
-              voiceNoticeMessage.textContent = `Heard: "${event.data.text}"`;
-              voiceNotice.open = true;
-            }
-          }
+          window.open(window.location.href, "_blank");
         });
       } else if (SpeechRecognition) {
         const recognition = new SpeechRecognition();

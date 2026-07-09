@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Voice Input</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+
+      body {
+        font-family: "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+        background: #f5f5f5;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        gap: 14px;
+        color: #323232;
+        user-select: none;
+      }
+
+      h3 {
+        font-size: 12px;
+        font-weight: 600;
+        color: #6a6a6a;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+      }
+
+      #mic-btn {
+        width: 76px;
+        height: 76px;
+        border-radius: 50%;
+        border: none;
+        background: #0079c1;
+        color: white;
+        font-size: 30px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.2s, transform 0.1s;
+      }
+
+      #mic-btn:hover:not(:disabled) {
+        background: #005a8f;
+        transform: scale(1.05);
+      }
+
+      #mic-btn:disabled {
+        cursor: default;
+      }
+
+      #mic-btn.listening {
+        background: #d83020;
+        animation: pulse 1.2s ease-in-out infinite;
+      }
+
+      #mic-btn.done {
+        background: #137547;
+      }
+
+      @keyframes pulse {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(216, 48, 32, 0.4); }
+        50%       { box-shadow: 0 0 0 14px rgba(216, 48, 32, 0); }
+      }
+
+      #status {
+        font-size: 13px;
+        color: #6a6a6a;
+        text-align: center;
+        max-width: 240px;
+        min-height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .lang-row {
+        display: flex;
+        gap: 8px;
+      }
+
+      .lang-btn {
+        padding: 4px 14px;
+        border-radius: 12px;
+        border: 1.5px solid #0079c1;
+        background: white;
+        color: #0079c1;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s;
+      }
+
+      .lang-btn.active {
+        background: #0079c1;
+        color: white;
+      }
+    </style>
+  </head>
+  <body>
+    <h3>Voice Input</h3>
+    <button id="mic-btn" autofocus>🎤</button>
+    <div id="status">Click the mic to speak</div>
+    <div class="lang-row">
+      <button class="lang-btn" id="btn-ar">AR</button>
+      <button class="lang-btn" id="btn-en">EN</button>
+    </div>
+
+    <script type="module">
+      const params = new URLSearchParams(window.location.search);
+      let lang = params.get("lang") || "ar-EG";
+
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      const micBtn   = document.getElementById("mic-btn");
+      const status   = document.getElementById("status");
+      const btnAr    = document.getElementById("btn-ar");
+      const btnEn    = document.getElementById("btn-en");
+
+      function setLang(l) {
+        lang = l;
+        btnAr.classList.toggle("active", l === "ar-EG");
+        btnEn.classList.toggle("active", l === "en-US");
+        if (recognition) recognition.lang = l;
+      }
+
+      btnAr.addEventListener("click", () => setLang("ar-EG"));
+      btnEn.addEventListener("click", () => setLang("en-US"));
+      setLang(lang);
+
+      if (!SpeechRecognition) {
+        status.textContent = "Speech recognition is not supported in this browser.";
+        micBtn.disabled = true;
+      } else {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = false;
+        recognition.lang = lang;
+
+        async function translateToArabic(text) {
+          const res  = await fetch(
+            `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|ar`
+          );
+          const data = await res.json();
+          return data?.responseData?.translatedText || text;
+        }
+
+        let isListening = false;
+
+        micBtn.addEventListener("click", () => {
+          if (!isListening) recognition.start();
+        });
+
+        recognition.addEventListener("start", () => {
+          isListening = true;
+          micBtn.classList.add("listening");
+          micBtn.textContent = "⏹";
+          status.textContent = lang === "ar-EG" ? "جارٍ الاستماع..." : "Listening...";
+        });
+
+        recognition.addEventListener("end", () => {
+          isListening = false;
+          if (!micBtn.classList.contains("done")) {
+            micBtn.classList.remove("listening");
+            micBtn.textContent = "🎤";
+            if (status.textContent.includes("Listening") || status.textContent.includes("جارٍ")) {
+              status.textContent = "Click the mic to speak";
+            }
+          }
+        });
+
+        recognition.addEventListener("result", async (event) => {
+          const transcript = event.results[0][0].transcript.trim();
+          if (!transcript) return;
+
+          micBtn.disabled = true;
+          status.textContent = lang === "en-US" ? "Translating..." : "Processing...";
+
+          let finalText = transcript;
+          if (lang === "en-US") {
+            try {
+              finalText = await translateToArabic(transcript);
+            } catch (e) {
+              // fall back to original transcript
+            }
+          }
+
+          if (window.opener) {
+            window.opener.postMessage({ type: "voice-result", text: finalText }, "*");
+          }
+
+          micBtn.classList.remove("listening");
+          micBtn.classList.add("done");
+          micBtn.textContent = "✓";
+          status.textContent = "Sent to chat!";
+          setTimeout(() => window.close(), 800);
+        });
+
+        recognition.addEventListener("error", (event) => {
+          status.textContent = "Error: " + event.error + " — try again.";
+          micBtn.classList.remove("listening");
+          micBtn.textContent = "🎤";
+          isListening = false;
+          micBtn.disabled = false;
+        });
+      }
+    </script>
+  </body>
+</html>
