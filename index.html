@@ -61,21 +61,6 @@
       <calcite-shell-panel slot="panel-end" width="m" id="assistant-panel">
         <calcite-panel>
           <calcite-action
-            id="lang-ar"
-            slot="header-actions-end"
-            text="AR"
-            text-enabled
-            active
-            title="Recognize speech in Arabic">
-          </calcite-action>
-          <calcite-action
-            id="lang-en"
-            slot="header-actions-end"
-            text="EN"
-            text-enabled
-            title="Recognize speech in English (translated to Arabic before sending)">
-          </calcite-action>
-          <calcite-action
             id="mic-button"
             slot="header-actions-end"
             icon="microphone"
@@ -112,33 +97,10 @@
         "ترتيب أنواع المخالفات الأكثر تكرارًا"
       ];
 
-      // Voice input: capture speech, convert to text, translate to Arabic if needed, and run it as a prompt
       const micButton = document.getElementById("mic-button");
-      const langArButton = document.getElementById("lang-ar");
-      const langEnButton = document.getElementById("lang-en");
       const voiceNotice = document.getElementById("voice-notice");
       const voiceNoticeMessage = document.getElementById("voice-notice-message");
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-      let recognitionLang = "ar-EG";
-
-      function setRecognitionLang(lang, recognition) {
-        recognitionLang = lang;
-        langArButton.active = lang === "ar-EG";
-        langEnButton.active = lang === "en-US";
-        if (recognition) {
-          recognition.lang = lang;
-        }
-      }
-
-      // Free translation API, no key required (rate-limited - fine for demo/testing)
-      async function translateToArabic(text) {
-        const response = await fetch(
-          `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|ar`
-        );
-        const data = await response.json();
-        return data?.responseData?.translatedText || text;
-      }
 
       // Recursively search through nested shadow roots for elements matching `predicate`.
       function findDeepElements(root, predicate, results = []) {
@@ -185,13 +147,11 @@
 
       if (insideIframe) {
         micButton.title = "Click to open voice input";
-        langArButton.addEventListener("click", () => setRecognitionLang("ar-EG", null));
-        langEnButton.addEventListener("click", () => setRecognitionLang("en-US", null));
         micButton.addEventListener("click", () => {
-          const popupUrl = new URL("popup.html", window.location.href).href + "?lang=" + recognitionLang;
+          const popupUrl = new URL("popup.html", window.location.href).href;
           const left = Math.round((screen.width - 320) / 2);
           const top  = Math.round((screen.height - 280) / 2);
-          window.open(popupUrl, "voice-input", `width=320,height=280,left=${left},top=${top},resizable=no`);
+          window.open(popupUrl, "voice-input", `width=320,height=280,left=${left},top=${top},resizable=no,toolbar=no,menubar=no,scrollbars=no,status=no`);
         });
         window.addEventListener("message", (event) => {
           if (event.data?.type === "voice-result" && event.data.text) {
@@ -205,10 +165,7 @@
         const recognition = new SpeechRecognition();
         recognition.continuous = false;
         recognition.interimResults = false;
-        setRecognitionLang(recognitionLang, recognition);
-
-        langArButton.addEventListener("click", () => setRecognitionLang("ar-EG", recognition));
-        langEnButton.addEventListener("click", () => setRecognitionLang("en-US", recognition));
+        recognition.lang = "ar-EG";
 
         let isListening = false;
 
@@ -232,23 +189,11 @@
           micButton.loading = false;
         });
 
-        recognition.addEventListener("result", async (event) => {
+        recognition.addEventListener("result", (event) => {
           const transcript = event.results[0][0].transcript.trim();
-          if (!transcript) {
-            return;
-          }
-
-          let finalText = transcript;
-          if (recognitionLang === "en-US") {
-            try {
-              finalText = await translateToArabic(transcript);
-            } catch (error) {
-              console.error("Translation failed, sending original text:", error);
-            }
-          }
-
-          if (!fillAssistantPrompt(finalText)) {
-            voiceNoticeMessage.textContent = `Couldn't find the chat input field. Heard: "${finalText}"`;
+          if (!transcript) return;
+          if (!fillAssistantPrompt(transcript)) {
+            voiceNoticeMessage.textContent = `Couldn't find the chat input field. Heard: "${transcript}"`;
             voiceNotice.open = true;
           }
         });
