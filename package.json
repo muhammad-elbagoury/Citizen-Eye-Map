@@ -1,0 +1,31 @@
+{
+  "name": "arcgis-sdk-for-js",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/muhammad-elbagoury/Citizen-Eye-Map.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/muhammad-elbagoury/Citizen-Eye-Map/issues"
+  },
+  "homepage": "https://github.com/muhammad-elbagoury/Citizen-Eye-Map#readme",
+  "dependencies": {
+    "@arcgis/ai-components": "^5.1.12",
+    "@arcgis/core": "^5.1.12",
+    "@arcgis/map-components": "^5.1.12",
+    "@esri/calcite-components": "^5.1.2"
+  },
+  "devDependencies": {
+    "vite": "^8.1.4"
+  }
+}

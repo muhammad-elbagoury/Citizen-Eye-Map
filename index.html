@@ -4,8 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
     <title>AI Assistant component (beta) | Sample | ArcGIS Maps SDK for JavaScript</title>
-    <!-- Load the ArcGIS Maps SDK for JavaScript from CDN -->
-    <script type="module" src="https://js.arcgis.com/5.1/"></script>
+    <!-- Hide undefined web components until they are registered — prevents FOUC -->
+    <style>:not(:defined) { visibility: hidden; }</style>
+    <!-- ArcGIS components loaded from npm via Vite -->
+    <script type="module" src="/main.js"></script>
 
     <!--
       The built-in ArcGIS sign-in dialog shows the raw item ID in
@@ -77,6 +79,7 @@
             <arcgis-assistant-navigation-agent></arcgis-assistant-navigation-agent>
             <arcgis-assistant-data-exploration-agent></arcgis-assistant-data-exploration-agent>
             <arcgis-assistant-help-agent></arcgis-assistant-help-agent>
+            <arcgis-assistant-agent id="chart-agent-el"></arcgis-assistant-agent>
           </arcgis-assistant>
           <calcite-notice id="voice-notice" icon="microphone" closable kind="warning">
             <div slot="title">Voice prompt</div>
@@ -91,11 +94,95 @@
       const mapElement = document.querySelector("arcgis-map");
 
       assistantElement.suggestedPrompts = [
-        "أكثر المحافظات تسجيلاً للبلاغات",
-        "عرض بلاغات القمامة",
-        "البحث عن إشغالات الطريق والباعة الجائلين",
-        "ترتيب أنواع المخالفات الأكثر تكرارًا"
+        "لخصلي الوضع الحالي للبلاغات",
+        "ارسم مخطط بياني لأنواع المخالفات",
+        "أظهر توزيع البلاغات حسب المحافظة في رسم بياني",
+        "قارن المخالفات في القاهرة والإسكندرية",
+        "تطور البلاغات خلال الأشهر الماضية في مخطط خطي",
+        "اعرضلي محافظة القاهرة على الخريطة"
       ];
+
+      // Cyan highlight for clicked features AND assistant query results.
+      function initHighlight(view) {
+        const activeHighlights = new Map(); // layerView → HighlightHandle
+        const watchedLVs = new Set();
+
+        function clearLayerHighlight(lv) {
+          if (activeHighlights.has(lv)) { activeHighlights.get(lv).remove(); activeHighlights.delete(lv); }
+        }
+        function clearAllHighlights() {
+          for (const h of activeHighlights.values()) h.remove();
+          activeHighlights.clear();
+        }
+
+        // Click any feature to select it; click empty space to deselect.
+        view.on("click", async (clickEvent) => {
+          clearAllHighlights();
+          const hit = await view.hitTest(clickEvent);
+          const features = hit.results.filter(r => r.layer?.type === "feature");
+          if (!features.length) return;
+          const byLayer = new Map();
+          for (const r of features) {
+            if (!byLayer.has(r.layer)) byLayer.set(r.layer, []);
+            byLayer.get(r.layer).push(r.graphic);
+          }
+          for (const [layer, graphics] of byLayer) {
+            const lv = await view.whenLayerView(layer);
+            activeHighlights.set(lv, lv.highlight(graphics));
+          }
+        });
+
+        // Poll featureEffect / filter / definitionExpression on each feature layer view.
+        // The agent sets these via internal paths that bypass reactive change detection,
+        // so polling is the only reliable way to mirror the effect as a cyan highlight.
+        function watchLayerView(layer, lv) {
+          let lastFE, lastF, lastDE;
+          async function sync(filter) {
+            clearLayerHighlight(lv);
+            if (!filter) return;
+            const q = layer.createQuery();
+            if (filter.where) q.where = filter.where;
+            if (filter.geometry) { q.geometry = filter.geometry; q.spatialRelationship = filter.spatialRelationship || "intersects"; }
+            try {
+              const r = await lv.queryFeatures(q);
+              if (r.features.length) activeHighlights.set(lv, lv.highlight(r.features));
+            } catch (_) {}
+          }
+          setInterval(() => {
+            const fe = lv.featureEffect, f = lv.filter, de = layer.definitionExpression;
+            if (fe !== lastFE) {
+              lastFE = fe;
+              // featureEffect already provides visual emphasis (included = bright, excluded = dimmed).
+              // Calling lv.highlight() on top applies cyan to all features regardless of the filter,
+              // causing non-Cairo features to appear highlighted even while dimmed. Let featureEffect own the visual.
+              clearLayerHighlight(lv);
+            }
+            if (f  !== lastF)  { lastF  = f;  sync(f  ?? null); }
+            if (de !== lastDE) {
+              lastDE = de;
+              clearLayerHighlight(lv);
+              if (de && de !== "1=1") {
+                const q = layer.createQuery(); q.where = de;
+                lv.queryFeatures(q).then(r => { if (r.features.length) activeHighlights.set(lv, lv.highlight(r.features)); }).catch(() => {});
+              }
+            }
+          }, 300);
+        }
+
+        function tryAttach(lv) {
+          if (!lv || watchedLVs.has(lv) || lv.layer?.type !== "feature") return;
+          watchedLVs.add(lv);
+          watchLayerView(lv.layer, lv);
+        }
+
+        view.allLayerViews.forEach(lv => tryAttach(lv));
+        view.on("layerview-create", ({ layerView }) => tryAttach(layerView));
+      }
+
+      // Start as soon as mapElement.view is available (polling fallback for VSCode browser).
+      let ready = false;
+      mapElement.addEventListener("arcgisViewReadyChange", (e) => { if (e.detail?.ready && !ready) { ready = true; initHighlight(mapElement.view); } });
+      const poll = setInterval(() => { if (mapElement.view) { clearInterval(poll); if (!ready) { ready = true; initHighlight(mapElement.view); } } }, 500);
 
       const micButton = document.getElementById("mic-button");
       const voiceNotice = document.getElementById("voice-notice");
