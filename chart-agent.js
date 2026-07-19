@@ -284,6 +284,7 @@ Use for: "تطور البلاغات", "هذا الشهر", "هذه السنة", 
 showChart=true renders a chart; false returns the text data.
 Use chartType="line" when user asks for a line chart or trend visualization (default is "bar").
 Use limit=N to return only the N most recent time periods (e.g. limit=5 for last 5 months).
+Use breakdownField to split trend by a category (e.g. violation type) — produces one line per category.
 If multiple date fields exist and you know which one to use, pass it as dateFieldOverride.`,
   inputSchema: z.object({
     groupBy:           z.enum(["month","year"]),
@@ -291,6 +292,7 @@ If multiple date fields exist and you know which one to use, pass it as dateFiel
     showChart:  z.boolean().describe("true = render chart; false = return text list of periods and counts"),
     chartType:  z.enum(["bar","line"]).optional().describe('Use "line" for trend visualization, "bar" (default) for comparison'),
     limit:             z.number().int().optional().describe("Return only the N most recent time periods. This is a SINGLE parameter — do not call the tool multiple times for different periods."),
+    breakdownField:    z.string().optional().describe("Field name to split the time series by category (e.g. violation type). Each unique value becomes a separate line. Use when user asks for trend BY a category."),
     dateFieldOverride: z.string().optional().describe("Override the auto-detected date field with this exact field name"),
     filterField:       z.string().optional(),
     filterValues:      z.array(z.string()).optional(),
@@ -298,11 +300,12 @@ If multiple date fields exist and you know which one to use, pass it as dateFiel
     endDate:           z.string().optional()
   }),
   resultMode: "continue",
-  execute: async ({ groupBy, title, showChart, chartType, limit, dateFieldOverride, filterField, filterValues, startDate, endDate }, config) => {
+  execute: async ({ groupBy, title, showChart, chartType, limit, breakdownField, dateFieldOverride, filterField, filterValues, startDate, endDate }, config) => {
     const layer = getFeatureLayer();
     if (!layer) return "Map not loaded yet.";
 
     const fields    = layer.fields ?? [];
+    const oidField  = layer.objectIdField || "OBJECTID";
     const availableDates = describeDateFields(fields);
     const dateField = dateFieldOverride
       ? resolveField(fields, dateFieldOverride)
@@ -323,6 +326,91 @@ If multiple date fields exist and you know which one to use, pass it as dateFiel
       parts.push(locationWhere);
     }
 
+    // ── Multi-series path: one line per category ─────────────────────────────
+    if (breakdownField) {
+      const actualBreakdown = resolveField(fields, breakdownField);
+      if (!fields.find(f => f.name === actualBreakdown)) {
+        return `Breakdown field "${breakdownField}" not found. Available: ${fieldCatalogue(layer)}`;
+      }
+
+      // Get top 6 categories by total count within the current filter scope
+      const topQ = layer.createQuery();
+      topQ.outStatistics = [{ statisticType:"count", onStatisticField:oidField, outStatisticFieldName:"cnt" }];
+      topQ.groupByFieldsForStatistics = [actualBreakdown];
+      topQ.orderByFields = ["cnt DESC"];
+      topQ.num = 6;
+      topQ.where = parts.length ? parts.join(" AND ") : "1=1";
+
+      let categories;
+      try {
+        const topResult = await layer.queryFeatures(topQ);
+        categories = topResult.features.map(f => f.attributes[actualBreakdown]).filter(v => v != null).map(String);
+      } catch (err) {
+        return `Failed to get categories for breakdown: ${err.message}`;
+      }
+      if (!categories.length) return "No category data found.";
+
+      // For each category run a time series query
+      const allPeriods = new Map(); // sortKey → label
+      const rawDatasets = [];
+      for (const cat of categories) {
+        const catWhere = `${actualBreakdown} = '${cat.replace(/'/g,"''")}'`;
+        const catWhereFull = [...parts, catWhere].join(" AND ");
+        const cq = layer.createQuery();
+        cq.outFields = [dateField];
+        cq.where = catWhereFull || "1=1";
+        cq.num = 5000;
+        const catBuckets = new Map(); // sortKey → count
+        try {
+          const { features: cf } = await layer.queryFeatures(cq);
+          for (const f of cf) {
+            const raw = f.attributes[dateField];
+            if (!raw) continue;
+            const d = new Date(raw);
+            const key = groupBy === "year"
+              ? String(d.getFullYear())
+              : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+            const lbl = groupBy === "year"
+              ? String(d.getFullYear())
+              : `${ARABIC_MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+            allPeriods.set(key, lbl);
+            catBuckets.set(key, (catBuckets.get(key) ?? 0) + 1);
+          }
+        } catch (_) {}
+        rawDatasets.push({ label: cat, catBuckets });
+      }
+
+      if (!allPeriods.size) return "No time data found for the requested breakdown.";
+
+      // Sort periods and apply limit
+      const sortedKeys   = [...allPeriods.keys()].sort();
+      const limitedKeys  = (limit && limit > 0) ? sortedKeys.slice(-limit) : sortedKeys;
+
+      const datasets = rawDatasets.map(ds => ({
+        label: ds.label,
+        chartData: limitedKeys.map(k => ({ label: allPeriods.get(k), value: ds.catBuckets.get(k) ?? 0 }))
+      })).filter(ds => ds.chartData.some(d => d.value > 0));
+
+      if (!datasets.length) return "No data found for the requested breakdown.";
+
+      void syncMapToQuery(layer, locationWhere, locationWhere == null);
+
+      const resolvedType = chartType ?? "line";
+      if (showChart) {
+        try {
+          await sendUXSuggestion({ type:"violations-chart", data:{ title, datasets, chartType: resolvedType } }, config);
+        } catch (err) {
+          console.error("[ChartAgent] multi-series suggestion error:", err);
+        }
+        return `Multi-line chart rendered: ${datasets.length} categories over ${limitedKeys.length} periods. ` +
+          datasets.map(ds => `${ds.label}: ${ds.chartData.reduce((s,d)=>s+d.value,0)} بلاغ`).join(" | ");
+      }
+      return datasets.map(ds =>
+        `${ds.label}: ${ds.chartData.map(d => `${d.label}=${d.value}`).join(", ")}`
+      ).join("\n");
+    }
+
+    // ── Single-series path ────────────────────────────────────────────────────
     const q = layer.createQuery();
     q.outFields = [dateField];
     q.where     = parts.length ? parts.join(" AND ") : "1=1";
@@ -487,7 +575,12 @@ Common patterns: violation type (Category, ViolationType, نوع, فئه, SubTyp
 If you need to ask the user a clarifying question:
 - Write ONE short sentence in Arabic. No lists, no bullet points, no sub-options.
 - Do NOT call any tool in the same turn. No chart, no data query.
-- Maximum 1-2 sentences total. Example: "هل تريد رسم بياني أم إحصاءات نصية فقط؟"
+- NEVER ask a question whose answer is already in the user's message. Re-read the prompt before asking.
+- If genuinely unsure, ask ONE question per turn maximum — never ask multiple questions across consecutive turns for the same request.
+
+## Never do this
+- Never write placeholder text like [أدخل ...] or [insert ...] in responses. If data is missing from the tool result, say so in plain Arabic.
+- Never ask about time period interpretation when the user said "متوفرة في البيانات" or "متاحة في الداتا" — that is already the answer.
 
 ## Tool selection
 - Rankings / distributions / comparisons / charts → query_violations_chart
@@ -509,7 +602,12 @@ Default is chartType="bar".
 ## Limit (last N periods)
 Use limit=N in a SINGLE tool call — never call the tool N times for N periods.
 "آخر 5 أشهر" → limit=5, groupBy="month" in ONE call.
-"آخر 5 أشهر متاحة في الداتا" → same: limit=5 slices the N most recent months that have data.
+"آخر N شهور/سنوات متوفرة في البيانات" or "متاحة في الداتا" → always limit=N directly. NEVER ask if the user means "from today" vs "in the database" — "متوفرة/متاحة في البيانات" already answers that question.
+
+## Breakdown by category
+"مع بيان أنواع المخالفات" / "مقسّم حسب النوع" / "حسب فئة المخالفة" → use breakdownField=<violation type field> in query_time_series.
+This produces one line per violation type. Use chartType="line" with it.
+Do NOT ask which categories to include — use all top categories (the tool picks the top 6 automatically).
 
 ## compareMode — CRITICAL RULES
 compareMode=true = one query PER named group, side-by-side chart on a SHARED scale.
